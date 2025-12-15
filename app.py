@@ -28,7 +28,7 @@ gc = get_gspread_client()
 @st.cache_data(ttl=5)
 def cargar_datos():
     try:
-        sh = gc.open_by_key(st.secrets["spreadsheet_id"])
+        sh = gc.open_by_key(st.secrets["1rdX5TEACkCtIU3j_yB-pVzYX5vNiQY-xATbQYjn4ybg"])
         worksheet = sh.worksheet(HOJA_NOMBRE)
 
         data = worksheet.get_all_records()
@@ -60,7 +60,7 @@ def cargar_datos():
 
 def guardar_datos(df):
     try:
-        sh = gc.open_by_key(st.secrets["spreadsheet_id"])
+        sh = gc.open_by_key(st.secrets["1rdX5TEACkCtIU3j_yB-pVzYX5vNiQY-xATbQYjn4ybg"])
         worksheet = sh.worksheet(HOJA_NOMBRE)
 
         data_to_write = [df.columns.tolist()] + df.values.tolist()
