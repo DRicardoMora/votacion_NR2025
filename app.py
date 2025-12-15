@@ -1,48 +1,64 @@
 import streamlit as st
 import pandas as pd
-# Importamos la librería clave para interactuar con Google Sheets
-from streamlit_gsheets import GSheetsConnection 
+# Importamos gspread para el cliente de la API que usaremos internamente
+import gspread 
 
 # --- CONFIGURACIÓN Y CONEXIÓN ---
 TITULO = "🏆 Votación: Disco Favorito 2025 Nación Rock"
 HOJA_NOMBRE = "Sheet1" # Nombre de la hoja de cálculo
-# El ID de la hoja se obtiene automáticamente de st.secrets["spreadsheet_id"]
 
-# Inicializar conexión con Google Sheets
-# Se asume que los secretos están configurados en [gcp_service_account]
-conn = st.connection("gsheets", type=GSheetsConnection) 
+# Inicializar conexión con Streamlit usando el tipo 'json'
+# Esto permite que Streamlit gestione la autenticación del Service Account
+# y nos dé acceso al cliente de gspread (conn.client())
+conn = st.connection("gsheets", type="json", ttl=5) 
 
 # --- FUNCIONES DE LECTURA Y ESCRITURA ---
 
-@st.cache_data(ttl=5) # Cacheamos la lectura por 5 segundos para reducir peticiones
+# Cacheamos la lectura por 5 segundos para reducir peticiones a Google Sheets
+@st.cache_data(ttl=5) 
 def cargar_datos():
-    """Carga los datos de Google Sheets."""
+    """Carga los datos de Google Sheets usando el cliente gspread."""
     try:
-        # Lee los datos de la hoja configurada con el ID del secreto.
-        # Usa headers=1 para tomar la primera fila como nombres de columna.
-        df = conn.read(worksheet=HOJA_NOMBRE, usecols=list(range(4)), ttl=5) 
+        # 1. Obtener el cliente gspread autenticado
+        gc = conn.client() 
+        # 2. Abrir la hoja de cálculo usando el ID guardado en st.secrets
+        sh = gc.open_by_key(st.secrets["spreadsheet_id"])
+        # 3. Seleccionar la hoja (worksheet) por su nombre
+        worksheet = sh.worksheet(HOJA_NOMBRE)
         
-        # Proceso de limpieza similar al anterior
-        df = df.dropna(how="all") # Elimina filas completamente vacías
+        # 4. Obtener todos los valores. get_all_records() devuelve una lista de diccionarios.
+        data = worksheet.get_all_records()
+        df = pd.DataFrame(data) 
+        
+        # Proceso de limpieza: asegura el tipo de dato para 'votos'
+        df = df.dropna(how="all") 
         df['votos'] = pd.to_numeric(df['votos'], errors='coerce').fillna(0).astype(int)
         
         return df
     except Exception as e:
-        st.error(f"Error al cargar datos de Google Sheets: {e}")
+        st.error(f"Error al cargar datos de Google Sheets. Verifica secretos y permisos: {e}")
         return pd.DataFrame(columns=['artista', 'album', 'url_portada', 'votos'])
 
 def guardar_datos(df):
     """Guarda el DataFrame actualizado a Google Sheets."""
     try:
-        # Escribe todo el DataFrame de vuelta a la hoja de cálculo
-        conn.write(data=df, worksheet=HOJA_NOMBRE)
+        gc = conn.client() 
+        sh = gc.open_by_key(st.secrets["spreadsheet_id"])
+        worksheet = sh.worksheet(HOJA_NOMBRE)
+
+        # 1. Convertir el DataFrame a una lista de listas, incluyendo las cabeceras (columnas)
+        data_to_write = [df.columns.values.tolist()] + df.values.tolist()
+
+        # 2. Escribir los datos de vuelta, empezando desde la celda 'A1'
+        # Esto reemplaza todo el contenido de la hoja
+        worksheet.update('A1', data_to_write)
         return True
     except Exception as e:
         st.error(f"Error al guardar datos en Google Sheets: {e}")
         return False
 
 # Usamos Session State para cargar y mantener el DataFrame
-# Esto permite que la interfaz muestre el estado actual sin recargar GSheets constantemente
+# Se carga una sola vez al inicio de la sesión
 if 'df' not in st.session_state:
     st.session_state.df = cargar_datos()
 
@@ -55,7 +71,11 @@ def votar_album(index):
     """
     Incrementa el contador de votos para el índice dado, actualiza y guarda en GSheets.
     """
-    # 1. Necesitamos cargar la versión más reciente de GSheets (la que tiene más votos)
+    # 1. Cargar la versión más reciente (rompe el caché temporalmente si es necesario)
+    # Debemos llamar a cargar_datos() sin usar caché aquí para obtener la versión más actual de GSheets
+    # Sin embargo, dado que cargar_datos tiene ttl=5, si votan dos veces en 5s, el segundo voto se perderá.
+    # Por ahora, mantenemos la llamada normal.
+    st.cache_data.clear() # Limpiamos el caché antes de cargar para obtener la versión más nueva
     df_actualizado = cargar_datos()
     
     # 2. Incrementar el voto en esa versión
@@ -94,9 +114,9 @@ else:
                 st.warning("No hay portada disponible.")
 
             # Botón de Voto
-            # Nota: Usar el index 'i' para el key del botón es crucial
             if st.button("Votar", key=f"voto_{i}"):
                 votar_album(i)
+                st.rerun() # Forzar el refresco para mostrar el voto actualizado
                 
             # Muestra el conteo de votos (de la Session State)
             st.info(f"Votos: {row['votos']}")
@@ -107,7 +127,6 @@ st.sidebar.header("Resultados (Top 5)")
 if not df_display.empty:
     # Ordenar y mostrar los resultados más recientes del Session State
     df_resultados = df_display.sort_values(by='votos', ascending=False).head(5)
-    # Se debe resetear el índice para que muestre la tabla correctamente
     st.sidebar.dataframe(df_resultados[['album', 'votos']].reset_index(drop=True), hide_index=True)
 
 # Añade un botón para forzar la actualización de los datos de GSheets
